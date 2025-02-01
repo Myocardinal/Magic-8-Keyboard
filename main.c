@@ -42,6 +42,85 @@
 #include "QMI8658.h"
 #include "fonts.h"
 
+//--------------------------------------------------------------------+
+// Color management
+//--------------------------------------------------------------------+
+
+/*
+ * GC9A01A color can be represented with 16-bit integers.
+ * Red channel: 5 bits, Green channel: 6 bits, Blue channel: 5 bits
+ * Color interpolation done naively :)
+ */
+uint32_t sRGBBackgroundColor = 0x1B263B;
+uint32_t sRGBTextStartColor = 0x415A77;
+uint32_t sRGBTextEndColor = 0xE0E1DD;
+
+uint16_t sRGB_to_display(uint32_t srgb)
+{
+  // Split srgb into individual 8 bit rgb channels
+  float b = srgb & 0xFF;
+  float g = (srgb >> 8) & 0xFF;
+  float r = (srgb >> 16) & 0xFF;
+
+  // Convert bit depth
+  uint8_t rDisplay = r / 255 * 31;
+  uint8_t gDisplay = g / 255 * 63;
+  uint8_t bDisplay = b / 255 * 31;
+
+  // Construct new color
+  uint16_t rgbDisplay = rDisplay;
+  rgbDisplay = (rgbDisplay << 6) | gDisplay;
+  rgbDisplay = (rgbDisplay << 5) | bDisplay;
+  
+  return rgbDisplay;
+}
+
+uint32_t interpolate_rgb_color(uint32_t startRGB, uint32_t endRGB, float portion)
+{
+  float startB = startRGB & 0xFF;
+  float startG = (startRGB >> 8) & 0xFF;
+  float startR = (startRGB >> 16) & 0xFF;
+
+  float endB = endRGB & 0xFF;
+  float endG = (endRGB >> 8) & 0xFF;
+  float endR = (endRGB >> 16) & 0xFF;
+
+  uint8_t interR = startR * (1 - portion) + endR * portion;
+  uint8_t interG = startG * (1 - portion) + endG * portion;
+  uint8_t interB = startB * (1 - portion) + endB * portion;
+
+  uint32_t finalRGB = interR;
+  finalRGB = (finalRGB << 8) | interG;
+  finalRGB = (finalRGB << 8) | interB;
+
+  return finalRGB;
+}
+
+uint16_t interpolate_display_color(uint16_t startRGB, uint16_t endRGB, float portion)
+{
+  // (1 - portion) * startRGB + portion * endRGB
+  
+  // Extract RGB channels
+  float startB = startRGB & 0x1F;
+  Paint_DrawNum(120-41, 120-64-24+30, startB, &Font16, 2, BLACK, WHITE);
+  float startG = (startRGB >> 5) & 0x3F;
+  float startR = (startRGB >> 11) & 0x1F;
+
+  float endB = endRGB & 0x1F;
+  float endG = (endRGB >> 5) & 0x3F;
+  float endR = (endRGB >> 11) & 0x1F;
+
+  // Calculate new interpolated colors
+  uint8_t interR = (uint8_t) (startR * (1 - portion) + endR * portion);
+  uint8_t interG = (uint8_t) (startG * (1 - portion) + endG * portion);
+  uint8_t interB = (uint8_t) (startB * (1 - portion) + endB * portion);
+
+  uint16_t interRGB = interR;
+  interRGB = (interRGB << 6) | interG;
+  interRGB = (interRGB << 5) | interB;
+}
+
+uint16_t backgroundColor, textStartColor, textEndColor;
 
 //--------------------------------------------------------------------+
 // Waveshare helper functions
@@ -67,7 +146,7 @@ void waveshare_init() {
 
   // Initialize LCD
   LCD_1IN28_Init(HORIZONTAL);
-  LCD_1IN28_Clear(WHITE);
+  LCD_1IN28_Clear(backgroundColor);
   DEV_SET_PWM(60);
 
   // Create image
@@ -79,7 +158,7 @@ void waveshare_init() {
   }
   Paint_NewImage((UBYTE *)BlackImage, LCD_1IN28.WIDTH, LCD_1IN28.HEIGHT, 0, WHITE);
   Paint_SetScale(65);
-  Paint_Clear(WHITE);
+  Paint_Clear(backgroundColor);
 
   // Initialize accelerometer
   QMI8658_init();
@@ -87,6 +166,8 @@ void waveshare_init() {
   // Seed RNG using noise from accelerometer
   srand((int) (acceleration_magnitude() * 1000));
 }
+
+
 
 
 //--------------------------------------------------------------------+
@@ -137,6 +218,11 @@ char selectedCharacter;
 uint64_t stateStartTime;
 
 void magic_update() {
+  // Initialize colors MUST BE DONE BEFORE WAVESHARE INIT
+  backgroundColor = sRGB_to_display(sRGBBackgroundColor);
+  textStartColor = sRGB_to_display(sRGBTextStartColor);
+  textEndColor = sRGB_to_display(sRGBTextEndColor);
+
   waveshare_init();
 
   while (true) {
@@ -145,8 +231,7 @@ void magic_update() {
     switch (state) {
       case STATE_LOW_KEYLESS: 
       {
-        
-        Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, WHITE);
+        // Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, backgroundColor);
         LCD_1IN28_Display(BlackImage);
 
         if (magnitude > LOW_TO_HIGH_THRESHOLD) {
@@ -164,8 +249,8 @@ void magic_update() {
         selectedCharacterString[1] = 0;
 
         // Print selected character
-        Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, BLACK, WHITE);
-        Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, WHITE);
+        Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, textStartColor, backgroundColor);
+        // Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, backgroundColor);
         LCD_1IN28_Display(BlackImage);
 
         if (magnitude < HIGH_TO_LOW_THRESHOLD) {
@@ -174,18 +259,23 @@ void magic_update() {
         }
       }
       break;
-
+ 
       case STATE_LOW_KEY:
       {
         // Prepare cstring for printing
         char selectedCharacterString[2];
         selectedCharacterString[0] = selectedCharacter;
         selectedCharacterString[1] = 0;
+
+        // Calculate current color
+        float portion = (time_us_64() - stateStartTime) / TIMEOUT_KEY_ENTER_TIME;
+        uint16_t currentTextColor = sRGB_to_display(interpolate_rgb_color(sRGBTextStartColor, sRGBTextEndColor, portion));
+      
         // Print selected character
-        Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, BLACK, WHITE);
-        Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, WHITE);
-        Paint_DrawNum(120-41, 120-64-24+30, time_us_64(), &Font16, 2, BLACK, WHITE);
-        Paint_DrawNum(120-41, 120-64-24+50, stateStartTime + TIMEOUT_KEY_ENTER_TIME, &Font16, 2, BLACK, WHITE);
+        Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, currentTextColor, backgroundColor);
+        Paint_DrawNum(120-41, 120-64-24, portion, &Font16, 2, BLACK, backgroundColor);
+        // Paint_DrawNum(120-41, 120-64-24+30, time_us_64(), &Font16, 2, BLACK, backgroundColor);
+        // Paint_DrawNum(120-41, 120-64-24+50, stateStartTime + TIMEOUT_KEY_ENTER_TIME, &Font16, 2, textStartColor, backgroundColor);
         LCD_1IN28_Display(BlackImage);
 
         if (magnitude > LOW_TO_HIGH_THRESHOLD) {
@@ -193,7 +283,7 @@ void magic_update() {
           selectedCharacter = getRandomChar();
         }
         else if (time_us_64() > stateStartTime + TIMEOUT_KEY_ENTER_TIME) {
-          Paint_Clear(WHITE);
+          Paint_Clear(backgroundColor);
           
           multicore_fifo_push_blocking(selectedCharacter);
 
