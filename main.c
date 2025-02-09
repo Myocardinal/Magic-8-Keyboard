@@ -42,6 +42,7 @@
 #include "QMI8658.h"
 #include "fonts.h"
 
+
 //--------------------------------------------------------------------+
 // Color management
 //--------------------------------------------------------------------+
@@ -121,12 +122,12 @@ uint16_t interpolate_display_color(uint16_t startRGB, uint16_t endRGB, float por
 
 uint16_t backgroundColor, textStartColor, textEndColor;
 
+
 //--------------------------------------------------------------------+
 // Waveshare helper functions
 //--------------------------------------------------------------------+
 
 UWORD *BlackImage;
-
 
 float acceleration_magnitude() {
     // Fetch acceleration info
@@ -173,8 +174,6 @@ void waveshare_init() {
   // Seed RNG using noise from accelerometer
   srand((int) (acceleration_magnitude() * 1000));
 }
-
-
 
 
 //--------------------------------------------------------------------+
@@ -225,7 +224,7 @@ void magic_update() {
 
     switch(state) {
       case STATE_LOW_KEYLESS: {
-        // No need to draw anything on screen here, as no referesh is needed
+        // No need to draw anything on screen here, as no refresh is needed
 
         // Transition to high key state if magnitude over threshold
         if (magnitude >= REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD) {
@@ -358,7 +357,6 @@ int main(void)
   {
     tud_task();
     hid_task();
-    sleep_ms(10);
   }
 
 }
@@ -492,28 +490,4 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize)
 {
   (void) instance;
-
-  // if (report_type == HID_REPORT_TYPE_OUTPUT)
-  // {
-  //   // Set keyboard LED e.g Capslock, Numlock etc...
-  //   if (report_id == REPORT_ID_KEYBOARD)
-  //   {
-  //     // bufsize should be (at least) 1
-  //     if ( bufsize < 1 ) return;
-
-  //     uint8_t const kbd_leds = buffer[0];
-
-  //     if (kbd_leds & KEYBOARD_LED_CAPSLOCK)
-  //     {
-  //       // Capslock On: disable blink, turn led on
-  //       blink_interval_ms = 0;
-  //       // board_led_write(true);
-  //     }else
-  //     {
-  //       // Caplocks Off: back to normal blink
-  //       // board_led_write(false);
-  //       blink_interval_ms = BLINK_MOUNTED;
-  //     }
-  //   }
-  // }
 }
