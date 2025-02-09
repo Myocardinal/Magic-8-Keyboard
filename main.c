@@ -102,7 +102,6 @@ uint16_t interpolate_display_color(uint16_t startRGB, uint16_t endRGB, float por
   
   // Extract RGB channels
   float startB = startRGB & 0x1F;
-  Paint_DrawNum(120-41, 120-64-24+30, startB, &Font16, 2, BLACK, WHITE);
   float startG = (startRGB >> 5) & 0x3F;
   float startR = (startRGB >> 11) & 0x1F;
 
@@ -138,6 +137,13 @@ float acceleration_magnitude() {
     return (float) sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
 }
 
+void get_acceleration(float *acc) {
+    float gyro[3];
+    unsigned int tim_count = 0;
+    QMI8658_read_xyz(gyro, acc, &tim_count);
+    return;
+}
+
 void waveshare_init() {
   DEV_Module_Init();
   adc_init();
@@ -158,6 +164,7 @@ void waveshare_init() {
   }
   Paint_NewImage((UBYTE *)BlackImage, LCD_1IN28.WIDTH, LCD_1IN28.HEIGHT, 0, WHITE);
   Paint_SetScale(65);
+  Paint_SetRotate(180);
   Paint_Clear(backgroundColor);
 
   // Initialize accelerometer
@@ -174,48 +181,28 @@ void waveshare_init() {
 // State machine
 //--------------------------------------------------------------------+
 typedef enum {
-  STATE_LOW_KEYLESS, // Low acceleration, no key selected
-  STATE_HIGH_KEYLESS, // High acceleration, no key selected
-  STATE_LOW_KEY, // Low acceleration, key selected
-  STATE_HIGH_KEY, // High acceleration, key selected
+  STATE_LOW_KEYLESS,
+  STATE_HIGH_KEY,
+  STATE_LOW_KEY,
+  STATE_ENTER_KEY,
 } MagicState;
-
-
-
-// typedef enum {
-//   EVENT_LOW_TO_HIGH,
-//   EVENT_HIGH_TO_LOW
-// } MagicEvent;
-
-void enter_state_low_keyless();
-void enter_state_high_keyless();
-void enter_state_low_key();
-void enter_state_high_key();
-void exit_state_low_keyless();
-void exit_state_high_keyless();
-void exit_state_low_key();
-void exit_state_high_key();
-void update_state_low_keyless();
-void update_state_high_keyless();
-void update_state_low_key();
-void update_state_high_key();
-
 
 // Range of ASCII characters to include, inclusive
 const int ASCII_LOWER_BOUND = 65;
 const int ASCII_UPPER_BOUND = 90;
-const float LOW_TO_HIGH_THRESHOLD = 100;
-const float HIGH_TO_LOW_THRESHOLD = 30;
-const float TIMEOUT_KEY_ENTER_TIME = 2 * 1000000; // Idle time in seconds spent in STATE_LOW_KEY before key is entered
+const float REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD = 250;
+const float TIMEOUT_KEY_ENTER_TIME = 0.35 * 1000000; // Idle time in seconds spent in STATE_LOW_KEY before key is entered
 
 char getRandomChar() {
     int rn = (rand() % (ASCII_UPPER_BOUND - ASCII_LOWER_BOUND + 1)) + ASCII_LOWER_BOUND;
     return (char) rn;
 }
 
-MagicState state = STATE_LOW_KEYLESS;
-char selectedCharacter;
-uint64_t stateStartTime;
+MagicState state = STATE_LOW_KEYLESS; // Current state
+char selectedCharacter; // Currently selected character that will be input after timeout in low key state
+uint64_t stateStartTime; // Time since start of state
+float lastSeenHighAcc[3] = {0.0f, 0.0f, 0.0f}; // The last acceleration reading that had a magnitude above REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD
+uint64_t lastFrameTime = 0; // The approximate time that the last frame ended. Used to calculate delta time.
 
 void magic_update() {
   // Initialize colors MUST BE DONE BEFORE WAVESHARE INIT
@@ -226,75 +213,111 @@ void magic_update() {
   waveshare_init();
 
   while (true) {
-    float magnitude = acceleration_magnitude();
+    // Calculate delta time
+    uint64_t currentTime = time_us_64();
+    uint64_t deltaTime = currentTime - lastFrameTime;
+    lastFrameTime = currentTime;
 
-    switch (state) {
-      case STATE_LOW_KEYLESS: 
-      {
-        // Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, backgroundColor);
-        LCD_1IN28_Display(BlackImage);
+    // Calculate acceleration and acceleration magnitude
+    float acc[3];
+    get_acceleration(acc);
+    float magnitude = (float) sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
 
-        if (magnitude > LOW_TO_HIGH_THRESHOLD) {
+    switch(state) {
+      case STATE_LOW_KEYLESS: {
+        // No need to draw anything on screen here, as no referesh is needed
+
+        // Transition to high key state if magnitude over threshold
+        if (magnitude >= REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD) {
+          memcpy(lastSeenHighAcc, acc, sizeof(lastSeenHighAcc));
+
           state = STATE_HIGH_KEY;
+
+          // Select character!
           selectedCharacter = getRandomChar();
         }
-      }
+
+      };
       break;
 
-      case STATE_HIGH_KEY:
-      {
+      case STATE_HIGH_KEY: {
         // Prepare cstring for printing
         char selectedCharacterString[2];
         selectedCharacterString[0] = selectedCharacter;
         selectedCharacterString[1] = 0;
-
-        // Print selected character
+        // Print key
         Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, textStartColor, backgroundColor);
-        // Paint_DrawNum(120-41, 120-64-24, magnitude, &Font16, 2, BLACK, backgroundColor);
         LCD_1IN28_Display(BlackImage);
 
-        if (magnitude < HIGH_TO_LOW_THRESHOLD) {
-            state = STATE_LOW_KEY;
-            stateStartTime = time_us_64();
+        // Check to see if current magnitude is under threshold
+        if (magnitude < REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD) {
+          state = STATE_LOW_KEY;
+          stateStartTime = time_us_64();
+          break;
         }
-      }
+
+        // Calculate dot product before overriding last seen high acceleration
+        float dotProduct = lastSeenHighAcc[0] * acc[0] + lastSeenHighAcc[1] * acc[1] + lastSeenHighAcc[2] * acc[2];
+
+        // Record current acceleration as last seen acceleration over magnitude if magnitude over threshold
+        memcpy(lastSeenHighAcc, acc, sizeof(lastSeenHighAcc));
+        
+        // Check if there's been a sigifinicant change in acceleration angle
+        if (dotProduct < 0) {
+          selectedCharacter = getRandomChar();
+        }
+      };
       break;
- 
-      case STATE_LOW_KEY:
-      {
+
+      case STATE_LOW_KEY: {
         // Prepare cstring for printing
         char selectedCharacterString[2];
         selectedCharacterString[0] = selectedCharacter;
         selectedCharacterString[1] = 0;
 
-        // Calculate current color
+        // How far from timeout are we, from 0-1
         float portion = (time_us_64() - stateStartTime) / TIMEOUT_KEY_ENTER_TIME;
         uint16_t currentTextColor = sRGB_to_display(interpolate_rgb_color(sRGBTextStartColor, sRGBTextEndColor, portion));
       
         // Print selected character
         Paint_DrawString_EN(120-41, 120-64-24, selectedCharacterString, &FontLibertinusMono128, currentTextColor, backgroundColor);
-        Paint_DrawNum(120-41, 120-64-24, portion, &Font16, 2, BLACK, backgroundColor);
-        // Paint_DrawNum(120-41, 120-64-24+30, time_us_64(), &Font16, 2, BLACK, backgroundColor);
-        // Paint_DrawNum(120-41, 120-64-24+50, stateStartTime + TIMEOUT_KEY_ENTER_TIME, &Font16, 2, textStartColor, backgroundColor);
         LCD_1IN28_Display(BlackImage);
 
-        if (magnitude > LOW_TO_HIGH_THRESHOLD) {
-          state = STATE_HIGH_KEY;
-          selectedCharacter = getRandomChar();
-        }
-        else if (time_us_64() > stateStartTime + TIMEOUT_KEY_ENTER_TIME) {
-          Paint_Clear(backgroundColor);
+        // Transition to high key state if magnitude over threshold
+        if (magnitude >= REGISTER_ACCELERATION_MAGNITUDE_THRESHOLD) {
           
+          state = STATE_HIGH_KEY;
+
+          float dotProduct = lastSeenHighAcc[0] * acc[0] + lastSeenHighAcc[1] * acc[1] + lastSeenHighAcc[2] * acc[2];
+
+          memcpy(lastSeenHighAcc, acc, sizeof(lastSeenHighAcc));
+
+          // Select a character only if dot product less than 0 
+          if (dotProduct < 0) {
+            selectedCharacter = getRandomChar();
+          }
+          break;
+        }
+
+        // Check if timeout
+        if (time_us_64() > stateStartTime + TIMEOUT_KEY_ENTER_TIME) {
+          // Fully clean display
+          Paint_Clear(backgroundColor);
+          LCD_1IN28_Display(BlackImage);
+          
+          // Enter currently selected key
           multicore_fifo_push_blocking(selectedCharacter);
 
+          // Return to low state
           state = STATE_LOW_KEYLESS;
+
+          // Clear acceleration to all 0sa
+          memset(lastSeenHighAcc, 0, sizeof(lastSeenHighAcc));
         }
-      }
+      };
       break;
     }
   }
-
-
 }
 
 //--------------------------------------------------------------------+
@@ -394,7 +417,7 @@ static void send_hid_report(uint8_t report_id, uint32_t btn)
         tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
 
         has_keyboard_key = true;
-      }else
+      } else
       {
         // send empty key report if previously has key pressed
         if (has_keyboard_key) tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
